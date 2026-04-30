@@ -14,6 +14,7 @@
     input::placeholder { color: rgba(0,0,0,0.35); }
     ::-webkit-scrollbar { width: 5px; }
     ::-webkit-scrollbar-thumb { background: #2a2d34; border-radius: 3px; }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.4} }
     @keyframes pulse { 0%,100%{box-shadow:0 0 20px rgba(245,197,24,0.3)} 50%{box-shadow:0 0 40px rgba(245,197,24,0.9), 0 0 60px rgba(245,197,24,0.4)} }
     @keyframes slideIn { from{opacity:0;transform:translateY(-10px)} to{opacity:1;transform:translateY(0)} }
     @keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
@@ -33,6 +34,7 @@ const STATUS_INFO = {
   미확인:   { icon:"🔴", label:"미확인",      color:"#ff4444", bg:"#3a1a1a", border:"#ff4444" },
   불법주차: { icon:"🚫", label:"불법주차 확정", color:"#ff2222", bg:"#4a0a0a", border:"#ff2222" },
   방문객:   { icon:"🟡", label:"방문객",       color:"#f5c518", bg:"#3a2a00", border:"#f5c518" },
+  교회성도: { icon:"⛪", label:"교회성도",     color:"#7ec8e3", bg:"#0a2030", border:"#7ec8e3" },
   등록예정: { icon:"🟢", label:"등록 예정",    color:"#3ddc84", bg:"#0d2b1f", border:"#3ddc84" },
 };
 
@@ -248,6 +250,7 @@ function App() {
               {[
                 { status:"불법주차", desc:"반복 출입하는 불법주차 차량" },
                 { status:"방문객",   desc:"일시적인 방문객 차량" },
+                { status:"교회성도", desc:"교회 성도 차량" },
                 { status:"등록예정", desc:"등록 차량으로 전환 (즉시 등록됨)" },
                 { status:"미확인",   desc:"나중에 다시 확인" },
               ].map(({ status, desc }) => {
@@ -399,7 +402,7 @@ function App() {
           { id:"registered", label:"📋 등록차량" },
           { id:"check",      label:"🔍 조회" },
           { id:"log",        label:"📊 기록" },
-          { id:"unreg",      label:"⚠️ 미등록" },
+          { id:"unreg",      label:"⚠️ 미등록차량" },
         ].map(t=>(
           <button key={t.id} onClick={()=>setTab(t.id)} style={{ flex:1, background:"none", border:"none", borderBottom:tab===t.id?"3px solid #f5c518":"3px solid transparent", color:tab===t.id?"#f5c518":"#ccc", padding:"11px 4px", cursor:"pointer", fontSize:12, fontFamily:"inherit", fontWeight:tab===t.id?700:500, whiteSpace:"nowrap", textAlign:"center" }}>{t.label}</button>
         ))}
@@ -588,13 +591,18 @@ function App() {
                       <div style={{ display:"flex", alignItems:"center", gap:10, padding:"13px 14px", background:`${s.bg}99` }}>
                         <div>
                           <div style={plateBadge}>{u.plate}</div>
-                          <div style={{ marginTop:6, display:"flex", gap:6, flexWrap:"wrap" }}>
+                          <div style={{ marginTop:6, display:"flex", gap:6, flexWrap:"wrap", alignItems:"center" }}>
                             <div style={{ background:u.count>=5?"#ff2222":u.count>=3?"#ff6600":"#996600", color:"white", borderRadius:20, padding:"2px 10px", fontSize:12, fontWeight:800, display:"inline-block" }}>
                               {u.count>=5?"🚨":u.count>=3?"⚠️":"📌"} {u.count}회 감지
                             </div>
                             <div style={{ background:s.bg, border:`1px solid ${s.border}`, borderRadius:20, padding:"2px 10px", fontSize:12, color:s.color, fontWeight:700, display:"inline-block" }}>
                               {s.icon} {s.label}
                             </div>
+                            {u.status==="미확인" && (
+                              <div style={{ background:"#2a1a00", border:"1px solid #ff8c00", borderRadius:20, padding:"2px 10px", fontSize:12, color:"#ff8c00", fontWeight:700, display:"inline-block" }}>
+                                ⚡ 조치 필요
+                              </div>
+                            )}
                           </div>
                         </div>
                         <button onClick={()=>setClassifyTarget({ plate:u.plate, currentStatus:u.status })} style={{ marginLeft:"auto", background:"#1a1400", border:"1px solid #f5c518", color:"#f5c518", borderRadius:8, padding:"8px 12px", cursor:"pointer", fontSize:12, fontFamily:"inherit", fontWeight:700, flexShrink:0 }}>
