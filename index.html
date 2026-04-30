@@ -1,0 +1,627 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>주차 관리 시스템</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0a0c10; font-family: 'Courier New', monospace; }
+    select option { background: #1a1d24; color: #e8e4d0; }
+    input::placeholder { color: rgba(0,0,0,0.35); }
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-thumb { background: #2a2d34; border-radius: 3px; }
+    @keyframes pulse { 0%,100%{box-shadow:0 0 20px rgba(245,197,24,0.3)} 50%{box-shadow:0 0 40px rgba(245,197,24,0.9), 0 0 60px rgba(245,197,24,0.4)} }
+    @keyframes slideIn { from{opacity:0;transform:translateY(-10px)} to{opacity:1;transform:translateY(0)} }
+    @keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+    @keyframes fadeIn { from{opacity:0} to{opacity:1} }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+const REGIONS = ["서울","경기","인천","부산","대구","광주","대전","울산","세종","강원","충북","충남","전북","전남","경북","경남","제주"];
+const USAGE   = ["가","나","다","라","마","거","너","더","러","머","버","서","어","저","고","노","도","로","모","보","소","오","조","구","누","두","루","무","부","수","우","주","하","허","호","바","사","아","자","카","타","파","배"];
+
+const STATUS_INFO = {
+  미확인:   { icon:"🔴", label:"미확인",      color:"#ff4444", bg:"#3a1a1a", border:"#ff4444" },
+  불법주차: { icon:"🚫", label:"불법주차 확정", color:"#ff2222", bg:"#4a0a0a", border:"#ff2222" },
+  방문객:   { icon:"🟡", label:"방문객",       color:"#f5c518", bg:"#3a2a00", border:"#f5c518" },
+  등록예정: { icon:"🟢", label:"등록 예정",    color:"#3ddc84", bg:"#0d2b1f", border:"#3ddc84" },
+};
+
+const DEMO_REGISTERED = ["서울12가3456","경기34나5678","인천56다7890"];
+const DEMO_LOG = [
+  { id:1, plate:"서울12가3456", time_str:"2026. 4. 29. 오전 9:10:22", registered:true,  status:null },
+  { id:2, plate:"부산99라1234", time_str:"2026. 4. 29. 오전 8:55:01", registered:false, status:"미확인" },
+  { id:3, plate:"경기34나5678", time_str:"2026. 4. 29. 오전 8:30:44", registered:true,  status:null },
+  { id:4, plate:"부산99라1234", time_str:"2026. 4. 28. 오후 6:12:09", registered:false, status:"미확인" },
+  { id:5, plate:"대전11바9999", time_str:"2026. 4. 28. 오후 3:20:00", registered:false, status:"미확인" },
+];
+const DEMO_UNREG = [
+  { plate:"부산99라1234", count:2, status:"미확인", times:["2026. 4. 29. 오전 8:55:01","2026. 4. 28. 오후 6:12:09"] },
+  { plate:"대전11바9999", count:1, status:"미확인", times:["2026. 4. 28. 오후 3:20:00"] },
+];
+
+let nextId = 10;
+
+function App() {
+  const [plateInput, setPlateInput]         = useState({ region:"", num1:"", usage:"", num2:"" });
+  const [registeredList, setRegisteredList] = useState(DEMO_REGISTERED);
+  const [entryLog, setEntryLog]             = useState(DEMO_LOG);
+  const [unregisteredLog, setUnregisteredLog] = useState(DEMO_UNREG);
+  const [checkResult, setCheckResult]       = useState(null);
+  const [tab, setTab]                       = useState("check");
+  const [addPlate, setAddPlate]             = useState("");
+  const [flash, setFlash]                   = useState(null);
+  const [classifyTarget, setClassifyTarget] = useState(null);
+
+  // Camera
+  const [cameraOpen, setCameraOpen]         = useState(false);
+  const [cameraMode, setCameraMode]         = useState("live");
+  const [capturedImage, setCapturedImage]   = useState(null);
+  const [ocrResult, setOcrResult]           = useState(null);
+  const [ocrError, setOcrError]             = useState(null);
+  const [ocrProgress, setOcrProgress]       = useState(0);
+  const [stream, setStream]                 = useState(null);
+  const [facingMode, setFacingMode]         = useState("environment");
+
+  const videoRef  = useRef(null);
+  const canvasRef = useRef(null);
+  const resultRef = useRef(null);
+
+  const formatPlate = (p) => `${p.region||""}${p.num1||""}${p.usage||""}${p.num2||""}`;
+  const isValidPlate = () => {
+    const { region, num1, usage, num2 } = plateInput;
+    return region && /^\d{2,3}$/.test(num1) && usage && /^\d{4}$/.test(num2);
+  };
+
+  // ── 분류 처리 ──────────────────────────────────────
+  const handleClassify = (status) => {
+    if (!classifyTarget) return;
+    const { plate } = classifyTarget;
+
+    setEntryLog(prev => prev.map(e =>
+      e.plate === plate && !e.registered ? { ...e, status } : e
+    ));
+    setUnregisteredLog(prev => prev.map(u =>
+      u.plate === plate ? { ...u, status } : u
+    ));
+
+    if (status === "등록예정") {
+      if (!registeredList.includes(plate)) {
+        setRegisteredList(prev => [plate, ...prev]);
+        setUnregisteredLog(prev => prev.filter(u => u.plate !== plate));
+        setFlash({ type:"ok", msg:`🟢 ${plate} 등록 완료 — 이후부터 등록 차량으로 처리됩니다` });
+      }
+    } else {
+      const s = STATUS_INFO[status];
+      setFlash({ type:"ok", msg:`${s.icon} ${plate} → ${s.label} 분류 완료` });
+    }
+    setClassifyTarget(null);
+  };
+
+  // ── Camera ─────────────────────────────────────────
+  const openCamera = () => {
+    setOcrResult(null); setOcrError(null); setCapturedImage(null);
+    setOcrProgress(0); setCameraMode("live"); setCameraOpen(true);
+  };
+
+  useEffect(() => {
+    if (!cameraOpen || cameraMode !== "live") return;
+    let s;
+    (async () => {
+      try {
+        s = await navigator.mediaDevices.getUserMedia({ video: { facingMode, width:{ideal:1280}, height:{ideal:720} } });
+        setStream(s);
+        if (videoRef.current) videoRef.current.srcObject = s;
+      } catch {
+        setOcrError("카메라 권한이 필요합니다. 브라우저에서 카메라를 허용해주세요.");
+        setCameraMode("error");
+      }
+    })();
+    return () => { if (s) s.getTracks().forEach(t => t.stop()); };
+  }, [cameraOpen, cameraMode, facingMode]);
+
+  const stopStream = () => { if (stream) { stream.getTracks().forEach(t=>t.stop()); setStream(null); } };
+  const closeCamera = () => {
+    stopStream(); setCameraOpen(false); setCameraMode("live");
+    setCapturedImage(null); setOcrResult(null); setOcrError(null); setOcrProgress(0);
+  };
+  const capturePhoto = () => {
+    const v = videoRef.current, c = canvasRef.current;
+    if (!v||!c) return;
+    c.width = v.videoWidth; c.height = v.videoHeight;
+    c.getContext("2d").drawImage(v,0,0);
+    setCapturedImage(c.toDataURL("image/jpeg",0.92));
+    setCameraMode("captured"); stopStream();
+  };
+  const retake = () => { setCapturedImage(null); setOcrResult(null); setOcrError(null); setOcrProgress(0); setCameraMode("live"); };
+  const switchCamera = () => { stopStream(); setFacingMode(f=>f==="environment"?"user":"environment"); setCameraMode("live"); };
+
+  // 데모 OCR 시뮬레이션 (실제 배포 시 Tesseract.js 연결)
+  const scanPlate = async () => {
+    setCameraMode("scanning"); setOcrError(null); setOcrProgress(0);
+    for (let i=0; i<=100; i+=10) { await new Promise(r=>setTimeout(r,150)); setOcrProgress(i); }
+    const demos = [
+      { found:true, region:"서울", num1:"12", usage:"가", num2:"3456", full:"서울12가3456" },
+      { found:true, region:"경기", num1:"34", usage:"나", num2:"5678", full:"경기34나5678" },
+      { found:true, region:"부산", num1:"99", usage:"라", num2:"1234", full:"부산99라1234" },
+      { found:true, region:"대전", num1:"11", usage:"바", num2:"9999", full:"대전11바9999" },
+    ];
+    setOcrResult(demos[Math.floor(Math.random()*demos.length)]);
+    setCameraMode("result");
+  };
+
+  const doCheck = (plate, registered, time_str) => {
+    setEntryLog(prev => [{ id:nextId++, plate, time_str, registered, status: registered?null:"미확인" }, ...prev]);
+    if (!registered) {
+      setUnregisteredLog(prev => {
+        const ex = prev.find(u=>u.plate===plate);
+        if (ex) return prev.map(u=>u.plate===plate ? {...u, count:u.count+1, times:[time_str,...u.times]} : u);
+        return [{ plate, count:1, status:"미확인", times:[time_str] }, ...prev];
+      });
+    }
+    setCheckResult({ plate, isRegistered:registered, time:time_str });
+  };
+
+  const applyOcr = () => {
+    if (!ocrResult) return;
+    const plate = ocrResult.full;
+    const time_str = new Date().toLocaleString("ko-KR");
+    const registered = registeredList.includes(plate);
+    setPlateInput({ region:ocrResult.region||"", num1:ocrResult.num1||"", usage:ocrResult.usage||"", num2:ocrResult.num2||"" });
+    closeCamera();
+    doCheck(plate, registered, time_str);
+    setFlash({ type:"ok", msg:`📸 ${plate} 자동 조회 완료!` });
+    setTimeout(() => resultRef.current?.scrollIntoView({ behavior:"smooth" }), 200);
+  };
+
+  const handleCheck = () => {
+    if (!isValidPlate()) { setFlash({ type:"error", msg:"번호판을 올바르게 입력해주세요." }); return; }
+    const plate = formatPlate(plateInput);
+    const time_str = new Date().toLocaleString("ko-KR");
+    const registered = registeredList.includes(plate);
+    doCheck(plate, registered, time_str);
+    setTimeout(() => resultRef.current?.scrollIntoView({ behavior:"smooth" }), 100);
+  };
+
+  const handleAddRegistered = () => {
+    const p = addPlate.trim().replace(/\s/g,"");
+    if (!p) return;
+    if (registeredList.includes(p)) { setFlash({ type:"warn", msg:"이미 등록된 차량입니다." }); return; }
+    setRegisteredList(prev=>[p,...prev]);
+    const wasUnreg = unregisteredLog.find(u=>u.plate===p);
+    if (wasUnreg) {
+      setUnregisteredLog(prev=>prev.filter(u=>u.plate!==p));
+      setFlash({ type:"ok", msg:`${p} 등록 완료 · 미등록 이력은 출입 기록에 보존됩니다` });
+    } else {
+      setFlash({ type:"ok", msg:`${p} 등록 완료` });
+    }
+    setAddPlate("");
+  };
+
+  const handleRemoveRegistered = (plate) => setRegisteredList(prev=>prev.filter(p=>p!==plate));
+  const clearAll = () => {
+    if (!confirm("모든 기록을 삭제하시겠습니까?")) return;
+    setEntryLog([]); setUnregisteredLog([]);
+  };
+
+  useEffect(() => {
+    if (!flash) return;
+    const t = setTimeout(()=>setFlash(null), 3500);
+    return ()=>clearTimeout(t);
+  }, [flash]);
+
+  const [plateReady, setPlateReady] = useState(false);
+
+  // 뒷자리 4자리 완성 감지
+  useEffect(() => {
+    if (isValidPlate()) {
+      setPlateReady(true);
+    } else {
+      setPlateReady(false);
+    }
+  }, [plateInput]);
+  const unconfirmedCount = unregisteredLog.filter(u=>u.status==="미확인").length;
+  const plateBadge = { background:"#f5c518", color:"#0a0c10", borderRadius:6, padding:"4px 12px", fontWeight:900, fontSize:16, letterSpacing:2 };
+
+  return (
+    <div style={{ minHeight:"100vh", background:"#0a0c10", color:"#e8e4d0", fontFamily:"'Courier New',monospace" }}>
+
+      {/* ══ 분류 모달 ══ */}
+      {classifyTarget && (
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.88)", zIndex:2000, display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}>
+          <div style={{ background:"#1a1d24", border:"2px solid #333", borderRadius:16, padding:28, width:"100%", maxWidth:400, animation:"slideIn 0.2s ease" }}>
+            <div style={{ fontSize:13, color:"#888", marginBottom:6, letterSpacing:1 }}>차량 분류</div>
+            <div style={{ background:"#f5c518", color:"#0a0c10", borderRadius:8, padding:"6px 18px", fontWeight:900, fontSize:22, letterSpacing:3, display:"inline-block", marginBottom:20 }}>
+              {classifyTarget.plate}
+            </div>
+            <div style={{ fontSize:13, color:"#aaa", marginBottom:16 }}>이 차량을 어떻게 분류하시겠습니까?</div>
+            <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+              {[
+                { status:"불법주차", desc:"반복 출입하는 불법주차 차량" },
+                { status:"방문객",   desc:"일시적인 방문객 차량" },
+                { status:"등록예정", desc:"등록 차량으로 전환 (즉시 등록됨)" },
+                { status:"미확인",   desc:"나중에 다시 확인" },
+              ].map(({ status, desc }) => {
+                const s = STATUS_INFO[status];
+                return (
+                  <button key={status} onClick={()=>handleClassify(status)} style={{
+                    padding:"13px 16px", background:"#111318", border:`1px solid ${s.border}`,
+                    borderRadius:10, cursor:"pointer", fontFamily:"inherit", textAlign:"left",
+                    display:"flex", alignItems:"center", gap:12,
+                  }}>
+                    <span style={{ fontSize:22 }}>{s.icon}</span>
+                    <div>
+                      <div style={{ color:s.color, fontWeight:800, fontSize:15 }}>{s.label}</div>
+                      <div style={{ color:"#666", fontSize:12, marginTop:2 }}>{desc}</div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+            <button onClick={()=>setClassifyTarget(null)} style={{ marginTop:14, width:"100%", padding:"11px", background:"none", border:"1px solid #333", color:"#888", borderRadius:8, cursor:"pointer", fontFamily:"inherit", fontSize:13 }}>
+              취소
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ══ CAMERA MODAL ══ */}
+      {cameraOpen && (
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.97)", zIndex:1000, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"0 12px" }}>
+          <div style={{ width:"100%", maxWidth:620, padding:"12px 0", display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
+            <div>
+              <div style={{ color:"#f5c518", fontWeight:800, fontSize:15 }}>
+                📸 번호판 카메라 인식
+                <span style={{ marginLeft:8, background:"#1a3a1a", border:"1px solid #3ddc84", color:"#3ddc84", borderRadius:12, padding:"2px 10px", fontSize:10 }}>FREE · Tesseract OCR</span>
+              </div>
+              <div style={{ color:"#666", fontSize:11, marginTop:2 }}>
+                {cameraMode==="live"&&"번호판을 가이드 안에 맞춰주세요"}
+                {cameraMode==="captured"&&"선명하게 찍혔나요?"}
+                {cameraMode==="scanning"&&`OCR 인식 중... ${ocrProgress}%`}
+                {cameraMode==="result"&&"✓ 번호판 인식 완료!"}
+                {cameraMode==="error"&&"카메라 오류"}
+              </div>
+            </div>
+            <button onClick={closeCamera} style={{ background:"#1a1d24", border:"1px solid #333", color:"#aaa", borderRadius:8, padding:"8px 14px", cursor:"pointer", fontFamily:"inherit", fontSize:13 }}>✕ 닫기</button>
+          </div>
+
+          <div style={{ width:"100%", maxWidth:620, position:"relative", overflow:"hidden", borderRadius:14, background:"#000", border:"2px solid #222", aspectRatio:"16/9", display:"flex", alignItems:"center", justifyContent:"center" }}>
+            {cameraMode==="live" && (
+              <>
+                <video ref={videoRef} autoPlay playsInline muted style={{ width:"100%", height:"100%", objectFit:"cover", position:"absolute", inset:0 }} />
+                <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center", pointerEvents:"none" }}>
+                  <div style={{ width:"68%", height:"26%", border:"3px solid #f5c518", borderRadius:8, boxShadow:"0 0 0 2000px rgba(0,0,0,0.55)", position:"relative" }}>
+                    {[[true,true],[true,false],[false,true],[false,false]].map(([t,l],i)=>(
+                      <div key={i} style={{ position:"absolute", top:t?-3:"auto", bottom:t?"auto":-3, left:l?-3:"auto", right:l?"auto":-3, width:20, height:20,
+                        borderTop:t?"3px solid #fff":"none", borderBottom:t?"none":"3px solid #fff",
+                        borderLeft:l?"3px solid #fff":"none", borderRight:l?"none":"3px solid #fff" }} />
+                    ))}
+                    <div style={{ position:"absolute", bottom:-28, left:"50%", transform:"translateX(-50%)", color:"#f5c518", fontSize:11, fontWeight:700, whiteSpace:"nowrap", textShadow:"0 1px 4px rgba(0,0,0,0.9)" }}>번호판을 여기에 맞춰주세요</div>
+                  </div>
+                </div>
+                <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center", color:"#333", fontSize:13, zIndex:-1 }}>카메라 로딩 중...</div>
+              </>
+            )}
+            {(cameraMode==="captured"||cameraMode==="scanning"||cameraMode==="result") && capturedImage && (
+              <img src={capturedImage} alt="captured" style={{ width:"100%", height:"100%", objectFit:"contain" }} />
+            )}
+            {cameraMode==="scanning" && (
+              <div style={{ position:"absolute", inset:0, background:"rgba(0,0,0,0.75)", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:14 }}>
+                <div style={{ width:54, height:54, border:"4px solid #1a1d24", borderTop:"4px solid #f5c518", borderRadius:"50%", animation:"spin 0.8s linear infinite" }} />
+                <div style={{ color:"#f5c518", fontWeight:800, fontSize:14, letterSpacing:2 }}>OCR 인식 중...</div>
+                <div style={{ width:180, height:6, background:"#1a1d24", borderRadius:3, overflow:"hidden" }}>
+                  <div style={{ height:"100%", background:"#f5c518", width:`${ocrProgress}%`, transition:"width 0.15s", borderRadius:3 }} />
+                </div>
+                <div style={{ color:"#888", fontSize:12 }}>{ocrProgress}%</div>
+              </div>
+            )}
+            {cameraMode==="error" && (
+              <div style={{ position:"absolute", inset:0, background:"#0a0c10", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:10, padding:24 }}>
+                <div style={{ fontSize:36 }}>📵</div>
+                <div style={{ color:"#ff6666", textAlign:"center", fontSize:13 }}>{ocrError}</div>
+              </div>
+            )}
+          </div>
+          <canvas ref={canvasRef} style={{ display:"none" }} />
+
+          {cameraMode==="result" && ocrResult && (
+            <div style={{ width:"100%", maxWidth:620, marginTop:12, background:"#0d2b1f", border:"2px solid #3ddc84", borderRadius:10, padding:"14px 20px", display:"flex", alignItems:"center", gap:14 }}>
+              <div style={{ fontSize:28 }}>✅</div>
+              <div>
+                <div style={{ fontSize:10, color:"#3ddc84", letterSpacing:1, marginBottom:4 }}>인식된 번호판</div>
+                <div style={{ background:"#f5c518", color:"#0a0c10", borderRadius:6, padding:"4px 16px", fontSize:22, fontWeight:900, letterSpacing:3, display:"inline-block" }}>{ocrResult.full}</div>
+              </div>
+              <div style={{ marginLeft:"auto", fontSize:11, color:"#3ddc84", lineHeight:1.9 }}>
+                {ocrResult.region&&<div>지역: {ocrResult.region}</div>}
+                <div>앞: {ocrResult.num1} | 용도: {ocrResult.usage}</div>
+                <div>뒤: {ocrResult.num2}</div>
+              </div>
+            </div>
+          )}
+          {ocrError && cameraMode==="captured" && (
+            <div style={{ width:"100%", maxWidth:620, marginTop:8, background:"#2b0d0d", border:"1px solid #ff4444", borderRadius:8, padding:"10px 16px", color:"#ff8888", fontSize:13 }}>⚠ {ocrError}</div>
+          )}
+
+          <div style={{ width:"100%", maxWidth:620, paddingTop:12, display:"flex", gap:10 }}>
+            {cameraMode==="live" && (<>
+              <button onClick={switchCamera} style={{ flex:"0 0 auto", padding:"14px 16px", fontSize:20, background:"#1a1d24", border:"1px solid #333", color:"#e8e4d0", borderRadius:10, cursor:"pointer" }}>🔄</button>
+              <button onClick={capturePhoto} style={{ flex:1, padding:"14px", background:"#f5c518", color:"#0a0c10", border:"none", borderRadius:10, fontSize:14, fontWeight:800, cursor:"pointer", fontFamily:"inherit" }}>📸 촬영</button>
+              <button onClick={scanPlate} style={{ flex:1, padding:"14px", background:"#2a3a1a", border:"1px solid #3ddc84", color:"#3ddc84", borderRadius:10, fontSize:13, fontWeight:800, cursor:"pointer", fontFamily:"inherit" }}>🎭 데모 인식</button>
+            </>)}
+            {cameraMode==="captured" && (<>
+              <button onClick={retake} style={{ flex:1, padding:"14px", background:"#1a1d24", border:"1px solid #333", color:"#e8e4d0", borderRadius:10, cursor:"pointer", fontFamily:"inherit", fontSize:14, fontWeight:700 }}>↩ 재촬영</button>
+              <button onClick={scanPlate} style={{ flex:2, padding:"14px", background:"#f5c518", color:"#0a0c10", border:"none", borderRadius:10, fontSize:14, fontWeight:800, cursor:"pointer", fontFamily:"inherit" }}>🔍 OCR 번호판 인식</button>
+            </>)}
+            {cameraMode==="result" && (<>
+              <button onClick={retake} style={{ flex:1, padding:"14px", background:"#1a1d24", border:"1px solid #333", color:"#e8e4d0", borderRadius:10, cursor:"pointer", fontFamily:"inherit", fontSize:14, fontWeight:700 }}>↩ 재촬영</button>
+              <button onClick={applyOcr} style={{ flex:2, padding:"14px", background:"#3ddc84", color:"#0a0c10", border:"none", borderRadius:10, fontSize:14, fontWeight:800, cursor:"pointer", fontFamily:"inherit" }}>✅ 바로 조회하기</button>
+            </>)}
+          </div>
+        </div>
+      )}
+
+      {/* ══ HEADER ══ */}
+      <div style={{ background:"linear-gradient(135deg,#1a1d24,#0f1117)", borderBottom:"2px solid #f5c518", padding:"16px 20px", display:"flex", alignItems:"center", gap:14, flexWrap:"wrap" }}>
+        <div style={{ background:"#f5c518", color:"#0a0c10", width:44, height:44, borderRadius:8, display:"flex", alignItems:"center", justifyContent:"center", fontSize:22, fontWeight:900, flexShrink:0 }}>P</div>
+        <div>
+          <div style={{ fontSize:17, fontWeight:800, letterSpacing:1, color:"#f5c518" }}>서현빌딩 주차 관리 시스템</div>
+          <div style={{ fontSize:11, color:"#bbb", letterSpacing:1 }}>PARKING CONTROL SYSTEM</div>
+          <div style={{ fontSize:10, color:"#888", letterSpacing:1 }}>Tesseract OCR · Supabase</div>
+        </div>
+        <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
+          {unconfirmedCount > 0 && (
+            <div onClick={()=>setTab("unreg")} style={{ background:"#3a1a1a", border:"2px solid #ff4444", borderRadius:10, padding:"8px 14px", cursor:"pointer", textAlign:"center" }}>
+              <div style={{ color:"#ff4444", fontSize:18, fontWeight:900 }}>{unconfirmedCount}</div>
+              <div style={{ color:"#ff8888", fontSize:10, fontWeight:700 }}>미확인 차량</div>
+            </div>
+          )}
+          <div style={{ background:"#1a2a1a", border:"1px solid #3ddc84", borderRadius:6, padding:"5px 12px", fontSize:11, color:"#3ddc84", fontWeight:700 }}>🟢 데모 모드</div>
+        </div>
+        {flash && (
+          <div style={{ width:"100%", background:flash.type==="ok"?"#1a3a1a":flash.type==="warn"?"#3a2a00":"#3a1a1a", border:`1px solid ${flash.type==="ok"?"#3ddc84":flash.type==="warn"?"#f5c518":"#ff4444"}`, color:flash.type==="ok"?"#3ddc84":flash.type==="warn"?"#f5c518":"#ff6666", padding:"8px 14px", borderRadius:6, fontSize:12, lineHeight:1.5, animation:"fadeIn 0.2s ease" }}>
+            {flash.msg}
+          </div>
+        )}
+      </div>
+
+      {/* ══ TABS ══ */}
+      <div style={{ display:"flex", borderBottom:"1px solid #222", background:"#0f1117" }}>
+        {[
+          { id:"registered", label:"📋 등록차량" },
+          { id:"check",      label:"🔍 조회" },
+          { id:"log",        label:"📊 기록" },
+          { id:"unreg",      label:"⚠️ 미등록" },
+        ].map(t=>(
+          <button key={t.id} onClick={()=>setTab(t.id)} style={{ flex:1, background:"none", border:"none", borderBottom:tab===t.id?"3px solid #f5c518":"3px solid transparent", color:tab===t.id?"#f5c518":"#ccc", padding:"11px 4px", cursor:"pointer", fontSize:12, fontFamily:"inherit", fontWeight:tab===t.id?700:500, whiteSpace:"nowrap", textAlign:"center" }}>{t.label}</button>
+        ))}
+      </div>
+
+      <div style={{ padding:"18px", maxWidth:760, margin:"0 auto" }}>
+
+        {/* ── CHECK TAB ── */}
+        {tab==="check" && (
+          <div>
+            <button onClick={openCamera}
+              style={{ width:"100%", marginBottom:14, padding:"13px 16px", background:"linear-gradient(135deg,#141720,#0f1117)", border:"2px dashed #2a2d34", borderRadius:12, cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center", gap:12, transition:"border-color 0.2s" }}
+              onMouseEnter={e=>e.currentTarget.style.borderColor="#f5c518"}
+              onMouseLeave={e=>e.currentTarget.style.borderColor="#2a2d34"}>
+              <div style={{ fontSize:40 }}>🔍</div>
+              <div style={{ textAlign:"left" }}>
+                <div style={{ color:"#e8e4d0", fontWeight:700, fontSize:14, letterSpacing:1 }}>카메라로 번호판 자동 인식</div>
+                <div style={{ color:"#999", fontSize:12, marginTop:2 }}>촬영 → OCR이 번호판을 자동으로 읽습니다</div>
+              </div>
+              <div style={{ marginLeft:"auto", background:"#1a3a1a", border:"1px solid #3ddc84", borderRadius:20, padding:"3px 10px", color:"#3ddc84", fontSize:10, fontWeight:800, flexShrink:0 }}>FREE</div>
+            </button>
+
+            <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:14 }}>
+              <div style={{ flex:1, height:1, background:"#1e2028" }} />
+              <div style={{ color:"#3a3d44", fontSize:10, letterSpacing:2 }}>또는 직접 입력</div>
+              <div style={{ flex:1, height:1, background:"#1e2028" }} />
+            </div>
+
+            {/* 번호판 UI */}
+            <div style={{ background:"#f5c518", borderRadius:12, padding:"14px 16px", display:"flex", alignItems:"center", gap:6, boxShadow:"0 0 30px rgba(245,197,24,0.15),inset 0 1px 0 rgba(255,255,255,0.3)", border:"3px solid #d4a800", marginBottom:12, flexWrap:"wrap" }}>
+              <div style={{ background:"#003580", color:"white", borderRadius:6, padding:"3px 7px", fontSize:9, fontWeight:800, textAlign:"center", minWidth:32 }}>🇰🇷<br/>KOR</div>
+              <select value={plateInput.region} onChange={e=>setPlateInput(p=>({...p,region:e.target.value}))} style={{ background:"transparent", border:"2px solid rgba(0,0,0,0.2)", borderRadius:6, padding:"6px 4px", fontSize:14, fontWeight:800, color:"#0a0c10", cursor:"pointer", fontFamily:"inherit" }}>
+                <option value="">지역</option>
+                {REGIONS.map(r=><option key={r} value={r}>{r}</option>)}
+              </select>
+              <input type="text" placeholder="00" maxLength="3" value={plateInput.num1}
+                onChange={e=>setPlateInput(p=>({...p,num1:e.target.value.replace(/\D/g,"")}))}
+                style={{ width:54, padding:"6px", textAlign:"center", background:"transparent", border:"2px solid rgba(0,0,0,0.2)", borderRadius:6, fontSize:20, fontWeight:900, color:"#0a0c10", fontFamily:"inherit" }} />
+              <select value={plateInput.usage} onChange={e=>setPlateInput(p=>({...p,usage:e.target.value}))} style={{ background:"transparent", border:"2px solid rgba(0,0,0,0.2)", borderRadius:6, padding:"6px 4px", fontSize:18, fontWeight:800, color:"#0a0c10", cursor:"pointer", fontFamily:"inherit" }}>
+                <option value="">용도</option>
+                {USAGE.map(u=><option key={u} value={u}>{u}</option>)}
+              </select>
+              <input type="text" placeholder="0000" maxLength="4" value={plateInput.num2}
+                onChange={e=>setPlateInput(p=>({...p,num2:e.target.value.replace(/\D/g,"")}))}
+                style={{ width:80, padding:"6px", textAlign:"center", background:"transparent", border:"2px solid rgba(0,0,0,0.2)", borderRadius:6, fontSize:21, fontWeight:900, color:"#0a0c10", letterSpacing:3, fontFamily:"inherit" }} />
+              <div style={{ marginLeft:"auto", color:"#0a0c10", fontSize:10, fontWeight:700, opacity:0.35 }}>
+                {isValidPlate() ? formatPlate(plateInput) : "입력 중..."}
+              </div>
+            </div>
+
+            <button onClick={()=>{ setPlateReady(false); handleCheck(); }} disabled={!isValidPlate()} style={{ width:"100%", padding:"14px", background:isValidPlate()?"#f5c518":"#2a2d38", color:isValidPlate()?"#0a0c10":"#888", border:isValidPlate()?"2px solid #f5c518":"1px solid #3a3d48", borderRadius:8, fontSize:16, fontWeight:800, cursor:isValidPlate()?"pointer":"not-allowed", letterSpacing:2, fontFamily:"inherit", animation:plateReady?"pulse 1s ease-in-out infinite":"none", transition:"all 0.3s", display:"flex", alignItems:"center", justifyContent:"center", gap:10 }}>
+              <span style={{ fontSize:24 }}>⌨️</span>
+              {plateReady ? "✅ 조회 / 기록 — 눌러주세요!" : "조회 / 기록"}
+            </button>
+            {plateReady && (
+              <div style={{ textAlign:"center", marginTop:6, fontSize:12, color:"#f5c518", fontWeight:700, animation:"fadeIn 0.3s ease" }}>
+                ⬆ 번호판 입력 완료! 버튼을 눌러 조회하세요
+              </div>
+            )}
+
+            <div style={{ marginTop:10, display:"flex", gap:6 }}>
+              {["서울12가3456","경기34나5678","부산99라1234"].map(p=>(
+                <button key={p} onClick={()=>{ const m=p.match(/([가-힣]{2})(\d{2,3})([가-힣])(\d{4})/); if(m) setPlateInput({region:m[1],num1:m[2],usage:m[3],num2:m[4]}); }} style={{ flex:1, padding:"7px 4px", background:"#1a1d24", border:"1px solid #2a2d34", color:"#bbb", borderRadius:6, cursor:"pointer", fontSize:11, fontFamily:"inherit" }}>
+                  {p}
+                </button>
+              ))}
+            </div>
+            <div style={{ textAlign:"center", color:"#aaa", fontSize:11, marginTop:4 }}>↑ 클릭하면 자동 입력 (테스트용)</div>
+
+            {checkResult && (
+              <div ref={resultRef} style={{ marginTop:18, border:`2px solid ${checkResult.isRegistered?"#3ddc84":"#ff4444"}`, borderRadius:12, overflow:"hidden", animation:"slideIn 0.3s ease" }}>
+                <div style={{ background:checkResult.isRegistered?"#0d2b1f":"#2b0d0d", padding:"16px 18px", display:"flex", alignItems:"center", gap:12 }}>
+                  <div style={{ fontSize:32 }}>{checkResult.isRegistered?"✅":"🔴"}</div>
+                  <div>
+                    <div style={{ fontSize:22, fontWeight:900, letterSpacing:4, color:checkResult.isRegistered?"#3ddc84":"#ff6666" }}>{checkResult.plate}</div>
+                    <div style={{ fontSize:16, fontWeight:800, color:checkResult.isRegistered?"#3ddc84":"#ff4444", letterSpacing:2 }}>
+                      {checkResult.isRegistered?"✔ 등록된 차량":"✖ 미등록 · 미확인"}
+                    </div>
+                  </div>
+                  {!checkResult.isRegistered && unregCount(checkResult.plate)>0 && (
+                    <div style={{ marginLeft:"auto", background:"#ff4444", color:"white", borderRadius:20, padding:"6px 12px", fontSize:13, fontWeight:700 }}>누적 {unregCount(checkResult.plate)}회</div>
+                  )}
+                </div>
+                <div style={{ background:"#111318", padding:"10px 18px", fontSize:13, color:"#bbb", display:"flex", gap:16, alignItems:"center" }}>
+                  <span>⏰ {checkResult.time}</span>
+                  {!checkResult.isRegistered && (
+                    <button onClick={()=>setClassifyTarget({ plate:checkResult.plate })} style={{ marginLeft:"auto", background:"#2a1a00", border:"1px solid #f5c518", color:"#f5c518", borderRadius:6, padding:"5px 14px", cursor:"pointer", fontSize:12, fontFamily:"inherit", fontWeight:700 }}>
+                      분류하기 →
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── REGISTERED TAB ── */}
+        {tab==="registered" && (
+          <div>
+            <div style={{ marginBottom:14 }}>
+              <div style={{ fontSize:13, color:"#bbb", marginBottom:4, letterSpacing:1 }}>차량 등록</div>
+              <div style={{ fontSize:12, color:"#f5c518", marginBottom:10, background:"#2a1f00", border:"1px solid #f5c518", borderRadius:6, padding:"7px 12px", letterSpacing:0.5 }}>
+                💡 입력 형식: <span style={{ fontWeight:800 }}>지역+숫자+용도+숫자</span> &nbsp;|&nbsp; 예) <span style={{ fontWeight:800 }}>서울12가3456</span> &nbsp;(빈칸 없이 작성)
+              </div>
+              <div style={{ display:"flex", gap:8 }}>
+                <input value={addPlate} onChange={e=>setAddPlate(e.target.value)} placeholder="예: 서울12가3456"
+                  onKeyDown={e=>e.key==="Enter"&&handleAddRegistered()}
+                  style={{ flex:1, padding:"10px 14px", background:"#1a1d24", border:"1px solid #333", borderRadius:8, color:"#e8e4d0", fontSize:14, fontFamily:"inherit", letterSpacing:1 }} />
+                <button onClick={handleAddRegistered} style={{ padding:"10px 16px", background:"#f5c518", color:"#0a0c10", border:"none", borderRadius:8, fontSize:14, fontWeight:800, cursor:"pointer", fontFamily:"inherit" }}>+ 등록</button>
+              </div>
+            </div>
+            {registeredList.length===0 ? (
+              <div style={{ textAlign:"center", color:"#555", padding:40, fontSize:14 }}>등록된 차량이 없습니다</div>
+            ) : (
+              <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                {registeredList.map((plate,i)=>(
+                  <div key={i} style={{ display:"flex", alignItems:"center", background:"#1a1d24", border:"1px solid #2a4a3a", borderLeft:"4px solid #3ddc84", borderRadius:8, padding:"12px 14px" }}>
+                    <div style={plateBadge}>{plate}</div>
+                    <div style={{ marginLeft:10, color:"#3ddc84", fontSize:13, fontWeight:600 }}>● 등록됨</div>
+                    <button onClick={()=>handleRemoveRegistered(plate)} style={{ marginLeft:"auto", background:"none", border:"1px solid #441a1a", color:"#ff6666", borderRadius:6, padding:"6px 12px", cursor:"pointer", fontSize:13, fontFamily:"inherit" }}>삭제</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── LOG TAB ── */}
+        {tab==="log" && (
+          <div>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
+              <div style={{ fontSize:14, color:"#ddd", fontWeight:700 }}>전체 출입 기록</div>
+              {entryLog.length>0 && <button onClick={clearAll} style={{ background:"none", border:"1px solid #441a1a", color:"#ff6666", borderRadius:6, padding:"6px 14px", cursor:"pointer", fontSize:13, fontFamily:"inherit" }}>기록 초기화</button>}
+            </div>
+            {entryLog.length===0 ? (
+              <div style={{ textAlign:"center", color:"#555", padding:40, fontSize:14 }}>출입 기록이 없습니다</div>
+            ) : (
+              <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                {entryLog.map((entry,i)=>{
+                  const s = entry.status ? STATUS_INFO[entry.status] : null;
+                  const wasRegisteredLater = !entry.registered && registeredList.includes(entry.plate);
+                  return (
+                    <div key={entry.id||i} style={{ background:i===0?"#1e2430":"#161920", border:`1px solid ${entry.registered?"#2a4a3a":s?s.border+"55":"#4a2a2a"}`, borderLeft:`4px solid ${entry.registered?"#3ddc84":s?s.border:"#ff4444"}`, borderRadius:10, padding:"13px 14px" }}>
+                      <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                        <div style={{ fontSize:22 }}>{entry.registered?"✅":s?s.icon:"🔴"}</div>
+                        <div style={{ flex:1 }}>
+                          <div style={{ background:"#f5c518", color:"#0a0c10", borderRadius:5, padding:"3px 10px", fontWeight:900, fontSize:15, letterSpacing:2, display:"inline-block" }}>{entry.plate}</div>
+                          <div style={{ marginTop:4, fontSize:13, color:"#ccc", fontWeight:600 }}>⏰ {entry.time_str}</div>
+                        </div>
+                        <div style={{ textAlign:"right", flexShrink:0 }}>
+                          <div style={{ fontSize:14, fontWeight:800, color:entry.registered?"#3ddc84":s?s.color:"#ff5555" }}>
+                            {entry.registered?"등록 차량":s?s.label:"미확인"}
+                          </div>
+                          {wasRegisteredLater && <div style={{ fontSize:11, color:"#f5c518", marginTop:2 }}>🕐 등록 전 기록</div>}
+                          {!entry.registered && !wasRegisteredLater && (
+                            <button onClick={()=>setClassifyTarget({ plate:entry.plate, currentStatus:entry.status })} style={{ marginTop:4, background:"#1a1400", border:"1px solid #555", color:"#ccc", borderRadius:6, padding:"3px 10px", cursor:"pointer", fontSize:11, fontFamily:"inherit" }}>분류하기</button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── UNREG TAB ── */}
+        {tab==="unreg" && (
+          <div>
+            <div style={{ display:"flex", gap:6, marginBottom:14, flexWrap:"wrap" }}>
+              {Object.entries(STATUS_INFO).map(([key,s])=>(
+                <div key={key} style={{ background:s.bg, border:`1px solid ${s.border}`, borderRadius:20, padding:"3px 10px", fontSize:11, color:s.color, fontWeight:700 }}>
+                  {s.icon} {s.label}
+                </div>
+              ))}
+            </div>
+            {unregisteredLog.length===0 ? (
+              <div style={{ textAlign:"center", color:"#555", padding:40 }}><div style={{ fontSize:32, marginBottom:8 }}>✅</div>미등록 차량 없음</div>
+            ) : (
+              <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+                {[...unregisteredLog].sort((a,b)=>b.count-a.count).map((u,i)=>{
+                  const s = STATUS_INFO[u.status||"미확인"];
+                  return (
+                    <div key={i} style={{ background:"#1a1d24", border:`1px solid ${s.border}55`, borderRadius:10, overflow:"hidden" }}>
+                      <div style={{ display:"flex", alignItems:"center", gap:10, padding:"13px 14px", background:`${s.bg}99` }}>
+                        <div>
+                          <div style={plateBadge}>{u.plate}</div>
+                          <div style={{ marginTop:6, display:"flex", gap:6, flexWrap:"wrap" }}>
+                            <div style={{ background:u.count>=5?"#ff2222":u.count>=3?"#ff6600":"#996600", color:"white", borderRadius:20, padding:"2px 10px", fontSize:12, fontWeight:800, display:"inline-block" }}>
+                              {u.count>=5?"🚨":u.count>=3?"⚠️":"📌"} {u.count}회 감지
+                            </div>
+                            <div style={{ background:s.bg, border:`1px solid ${s.border}`, borderRadius:20, padding:"2px 10px", fontSize:12, color:s.color, fontWeight:700, display:"inline-block" }}>
+                              {s.icon} {s.label}
+                            </div>
+                          </div>
+                        </div>
+                        <button onClick={()=>setClassifyTarget({ plate:u.plate, currentStatus:u.status })} style={{ marginLeft:"auto", background:"#1a1400", border:"1px solid #f5c518", color:"#f5c518", borderRadius:8, padding:"8px 12px", cursor:"pointer", fontSize:12, fontFamily:"inherit", fontWeight:700, flexShrink:0 }}>
+                          분류 변경
+                        </button>
+                      </div>
+                      <div style={{ borderTop:`1px solid ${s.border}33`, padding:"10px 14px" }}>
+                        <div style={{ fontSize:12, color:"#aaa", marginBottom:6 }}>감지 시각</div>
+                        {u.times.map((t,j)=>(
+                          <div key={j} style={{ fontSize:13, color:j===0?"#f5c518":"#bbb", display:"flex", gap:8, marginBottom:4, fontWeight:j===0?700:400 }}>
+                            <span>{j===0?"▶":"·"}</span><span>{t}</span>{j===0&&<span style={{ color:"#f5c518", fontSize:10 }}>(최근)</span>}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
