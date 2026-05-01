@@ -38,7 +38,7 @@ const {useState,useEffect,useRef}=React;
 
 // ── Supabase 설정 ──────────────────────────────────
 const SUPABASE_URL="https://hcnbjzmdupxucaectoii.supabase.co";
-const SUPABASE_KEY="sb_publishable_v6C8tMjYvbOCspbwusq1Jg_62QMU8To";
+const SUPABASE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhjbmJqem1kdXB4dWNhZWN0b2lpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc1MzM4ODksImV4cCI6MjA5MzEwOTg4OX0.JtTBB5Cj6HTN565aeTXnNRcXgF0cgwQI0sc-GnIf1mA";
 const sb=supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
 
 const STATUS_INFO={
@@ -50,6 +50,43 @@ const STATUS_INFO={
 
 const fmt=(iso)=>new Date(iso).toLocaleString("ko-KR",{year:"numeric",month:"long",day:"numeric",weekday:"short",hour:"2-digit",minute:"2-digit"});
 
+function CarTypeEditor({item,onRemove,onSave,plateBadge}){
+  const [editing,setEditing]=useState(false);
+  const [val,setVal]=useState(item.car_type||"");
+  return(
+    <div style={{background:"#f9f9f9",border:"1px solid #e8e8e8",borderRadius:8,padding:"9px 12px"}}>
+      <div style={{display:"flex",alignItems:"center",gap:10}}>
+        <div style={{flex:1}}>
+          <div style={plateBadge}>{item.plate}</div>
+          {!editing&&(
+            <div style={{marginTop:4,fontSize:12,color:"#888",display:"flex",alignItems:"center",gap:6}}>
+              {item.car_type
+                ? <span>🚗 {item.car_type}</span>
+                : <span style={{color:"#ccc"}}>차종 미입력</span>
+              }
+              <button onClick={()=>setEditing(true)} style={{background:"none",border:"1px solid #ddd",color:"#888",borderRadius:4,padding:"1px 7px",cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>수정</button>
+            </div>
+          )}
+          {editing&&(
+            <div style={{display:"flex",gap:6,marginTop:6}}>
+              <input value={val} onChange={e=>setVal(e.target.value)}
+                placeholder="차종 입력 (예: 소나타, SUV)"
+                autoFocus
+                style={{flex:1,padding:"5px 10px",border:"1.5px solid #111",borderRadius:6,fontSize:12,fontFamily:"inherit",outline:"none"}}/>
+              <button onClick={()=>{onSave(val);setEditing(false);}} style={{padding:"5px 10px",background:"#111",color:"#fff",border:"none",borderRadius:6,cursor:"pointer",fontSize:12,fontFamily:"inherit",fontWeight:700}}>저장</button>
+              <button onClick={()=>{setVal(item.car_type||"");setEditing(false);}} style={{padding:"5px 8px",background:"none",border:"1px solid #ddd",color:"#888",borderRadius:6,cursor:"pointer",fontSize:12,fontFamily:"inherit"}}>취소</button>
+            </div>
+          )}
+        </div>
+        <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:4,flexShrink:0}}>
+          <div style={{fontSize:12,color:"#38a169",fontWeight:600}}>✓ 등록됨</div>
+          <button onClick={onRemove} style={{background:"none",border:"1px solid #fed7d7",color:"#e53e3e",borderRadius:6,padding:"3px 10px",cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>삭제</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function App(){
   const [plateInput,setPlateInput]=useState("");
   const [regList,setRegList]=useState([]);
@@ -58,6 +95,8 @@ function App(){
   const [result,setResult]=useState(null);
   const [tab,setTab]=useState("check");
   const [addPlate,setAddPlate]=useState("");
+  const [addCarType,setAddCarType]=useState("");
+  const [classifyCarType,setClassifyCarType]=useState("");
   const [flash,setFlash]=useState(null);
   const [classifyTarget,setClassifyTarget]=useState(null);
   const [regOpen,setRegOpen]=useState(false);
@@ -75,11 +114,11 @@ function App(){
     setLoading(true);
     try{
       const [r1,r2,r3]=await Promise.all([
-        sb.from("registered_vehicles").select("plate").order("created_at",{ascending:false}),
+        sb.from("registered_vehicles").select("plate,car_type").order("created_at",{ascending:false}),
         sb.from("entry_log").select("*").order("created_at",{ascending:false}).limit(500),
         sb.from("unregistered_log").select("*").order("count",{ascending:false}),
       ]);
-      if(r1.data)setRegList(r1.data.map(r=>r.plate));
+      if(r1.data)setRegList(r1.data);
       if(r2.data)setLog(r2.data.map(e=>({...e,time_str:e.time_str||fmt(e.created_at)})));
       if(r3.data)setUnreg(r3.data);
     }catch(e){setFlash({type:"err",msg:"데이터 로드 실패: "+e.message});}
@@ -103,15 +142,18 @@ function App(){
     const {plate}=classifyTarget;
     setSaving(true);
     try{
-      await sb.from("entry_log").update({status}).eq("plate",plate).eq("registered",false);
-      await sb.from("unregistered_log").update({status}).eq("plate",plate);
-      setLog(prev=>prev.map(e=>e.plate===plate&&!e.registered?{...e,status}:e));
-      setUnreg(prev=>prev.map(u=>u.plate===plate?{...u,status}:u));
+      const upd={status};
+      if(classifyCarType) upd.car_type=classifyCarType;
+      await sb.from("entry_log").update(upd).eq("plate",plate).eq("registered",false);
+      await sb.from("unregistered_log").update(upd).eq("plate",plate);
+      setLog(prev=>prev.map(e=>e.plate===plate&&!e.registered?{...e,...upd}:e));
+      setUnreg(prev=>prev.map(u=>u.plate===plate?{...u,...upd}:u));
       const s=STATUS_INFO[status];
       setFlash({type:"ok",msg:`${s.icon} ${plate} → ${s.label} 분류 완료`});
     }catch(e){setFlash({type:"err",msg:"분류 실패: "+e.message});}
     setSaving(false);
     setClassifyTarget(null);
+    setClassifyCarType("");
   };
 
   // ── 조회 ──────────────────────────────────────────
@@ -120,7 +162,7 @@ function App(){
     if(!isValid(plate))return;
     const ts=new Date().toISOString();
     const time_str=fmt(ts);
-    const registered=regList.includes(plate);
+    const registered=regList.some(r=>r.plate===plate);
     setSaving(true);
     try{
       // 출입 기록 저장
@@ -150,16 +192,19 @@ function App(){
   const addReg=async()=>{
     const p=clean(addPlate);
     if(!p)return;
-    if(regList.includes(p)){setFlash({type:"warn",msg:"이미 등록된 차량입니다."});return;}
+    if(regList.some(r=>r.plate===p)){setFlash({type:"warn",msg:"이미 등록된 차량입니다."});return;}
     setSaving(true);
     try{
-      await sb.from("registered_vehicles").insert({plate:p});
-      // 미등록 기록 있으면 제거
+      const {data,error}=await sb.from("registered_vehicles").insert({plate:p,car_type:addCarType||null}).select();
+      if(error)throw error;
       await sb.from("unregistered_log").delete().eq("plate",p);
-      setAddPlate("");
+      setAddPlate(""); setAddCarType("");
       setFlash({type:"ok",msg:`${p} 등록 완료`});
       await loadAll();
-    }catch(e){setFlash({type:"err",msg:"등록 실패: "+e.message});}
+    }catch(e){
+      console.error("등록 오류:",e);
+      setFlash({type:"err",msg:`등록 실패: ${e.message||e.code||JSON.stringify(e)}`});
+    }
     setSaving(false);
   };
 
@@ -171,6 +216,16 @@ function App(){
       setFlash({type:"ok",msg:`${plate} 삭제 완료`});
       await loadAll();
     }catch(e){setFlash({type:"err",msg:"삭제 실패: "+e.message});}
+    setSaving(false);
+  };
+
+  const updateCarType=async(plate,carType)=>{
+    setSaving(true);
+    try{
+      await sb.from("registered_vehicles").update({car_type:carType||null}).eq("plate",plate);
+      setRegList(prev=>prev.map(r=>r.plate===plate?{...r,car_type:carType||null}:r));
+      setFlash({type:"ok",msg:`${plate} 차종 저장 완료`});
+    }catch(e){setFlash({type:"err",msg:"저장 실패: "+e.message});}
     setSaving(false);
   };
 
@@ -229,7 +284,12 @@ function App(){
         <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.4)",zIndex:2000,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
           <div style={{background:"#fff",borderRadius:16,padding:24,width:"100%",maxWidth:380,boxShadow:"0 20px 60px rgba(0,0,0,0.2)",animation:"slideIn 0.2s ease"}}>
             <div style={{fontSize:12,color:"#999",marginBottom:6}}>차량 분류</div>
-            <div style={{background:"#111",color:"#fff",borderRadius:8,padding:"8px 16px",fontWeight:900,fontSize:20,letterSpacing:3,display:"inline-block",marginBottom:16}}>{classifyTarget.plate}</div>
+            <div style={{background:"#111",color:"#fff",borderRadius:8,padding:"8px 16px",fontWeight:900,fontSize:20,letterSpacing:3,display:"inline-block",marginBottom:12}}>{classifyTarget.plate}</div>
+            <input value={classifyCarType} onChange={e=>setClassifyCarType(e.target.value)}
+              placeholder="🚗 차종 입력 (선택사항) — 예) 소나타, 아반떼, SUV"
+              style={{width:"100%",padding:"10px 14px",border:"1.5px solid #e8e8e8",borderRadius:8,fontSize:13,fontFamily:"inherit",color:"#111",outline:"none",marginBottom:14}}
+              onFocus={e=>e.target.style.borderColor="#111"}
+              onBlur={e=>e.target.style.borderColor="#e8e8e8"}/>
             <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:12}}>
               {[
                 {status:"불법주차",desc:"반복 출입하는 불법주차 차량"},
@@ -248,6 +308,27 @@ function App(){
                   </button>
                 );
               })}
+
+              {/* 잘못입력 삭제 */}
+              <button onClick={async()=>{
+                if(!confirm(`${classifyTarget.plate} 기록을 삭제하시겠습니까?\n잘못 입력된 기록을 완전히 제거합니다.`))return;
+                setSaving(true);
+                try{
+                  await sb.from("entry_log").delete().eq("plate",classifyTarget.plate);
+                  await sb.from("unregistered_log").delete().eq("plate",classifyTarget.plate);
+                  setLog(prev=>prev.filter(e=>e.plate!==classifyTarget.plate));
+                  setUnreg(prev=>prev.filter(u=>u.plate!==classifyTarget.plate));
+                  setFlash({type:"ok",msg:`🗑 ${classifyTarget.plate} 기록 삭제 완료`});
+                  setClassifyTarget(null);
+                }catch(e){setFlash({type:"err",msg:"삭제 실패: "+e.message});}
+                setSaving(false);
+              }} style={{padding:"12px 14px",background:"#f7f7f7",border:"1.5px solid #ddd",borderRadius:10,cursor:"pointer",fontFamily:"inherit",textAlign:"left",display:"flex",alignItems:"center",gap:10}}>
+                <span style={{fontSize:20}}>🗑</span>
+                <div>
+                  <div style={{color:"#666",fontWeight:700,fontSize:14}}>잘못 입력 삭제</div>
+                  <div style={{color:"#bbb",fontSize:11,marginTop:1}}>이 차량의 모든 기록을 완전히 삭제합니다</div>
+                </div>
+              </button>
             </div>
             <div style={{background:"#f0fff4",border:"1px solid #9ae6b4",borderRadius:8,padding:"8px 12px",marginBottom:10,fontSize:12,color:"#276749"}}>
               💡 차량 등록은 <b>차량등록 버튼</b>에서만 가능합니다
@@ -277,17 +358,21 @@ function App(){
                 onBlur={e=>e.target.style.borderColor="#e8e8e8"}/>
               <button onClick={addReg} style={{padding:"11px 16px",background:"#111",color:"#fff",border:"none",borderRadius:8,fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>+ 등록</button>
             </div>
+            <input value={addCarType} onChange={e=>setAddCarType(e.target.value)}
+              placeholder="🚗 차종 입력 (선택사항) — 예) 소나타, 아반떼, SUV"
+              style={{width:"100%",padding:"10px 14px",border:"1.5px solid #e8e8e8",borderRadius:8,fontSize:13,fontFamily:"inherit",color:"#111",outline:"none",marginBottom:14}}
+              onFocus={e=>e.target.style.borderColor="#111"}
+              onBlur={e=>e.target.style.borderColor="#e8e8e8"}/>
             {regList.length===0?(
               <div style={{textAlign:"center",color:"#ccc",padding:"16px 0",fontSize:13}}>등록된 차량이 없습니다</div>
             ):(
-              <div style={{display:"flex",flexDirection:"column",gap:7,maxHeight:260,overflowY:"auto"}}>
-                {regList.map((plate,i)=>(
-                  <div key={i} style={{display:"flex",alignItems:"center",gap:10,background:"#f9f9f9",border:"1px solid #e8e8e8",borderRadius:8,padding:"9px 12px"}}>
-                    <div style={plateBadge}>{plate}</div>
-                    <div style={{fontSize:12,color:"#38a169",fontWeight:600}}>✓ 등록됨</div>
-                    <button onClick={()=>removeReg(plate)} style={{marginLeft:"auto",background:"none",border:"1px solid #fed7d7",color:"#e53e3e",borderRadius:6,padding:"4px 10px",cursor:"pointer",fontSize:12,fontFamily:"inherit"}}>삭제</button>
-                  </div>
-                ))}
+              <div style={{display:"flex",flexDirection:"column",gap:7,maxHeight:300,overflowY:"auto"}}>
+                {regList.map((item,i)=>{
+                  const p=item.plate;
+                  return(
+                    <CarTypeEditor key={i} item={item} onRemove={()=>removeReg(p)} onSave={(ct)=>updateCarType(p,ct)} plateBadge={plateBadge}/>
+                  );
+                })}
               </div>
             )}
           </div>
@@ -326,7 +411,7 @@ function App(){
         {[
           {id:"check",label:"🔍 주차조회",ac:"#2b6cb0",ab:"#ebf8ff",ib:"#bee3f8"},
           {id:"log",  label:"📊 주차기록",ac:"#276749",ab:"#f0fff4",ib:"#9ae6b4"},
-          {id:"unreg",label:"⚠️ 미등록차량",ac:"#c53030",ab:"#fff5f5",ib:"#fed7d7"},
+          {id:"unreg",label:"⚠️ 조치필요차량",ac:"#c53030",ab:"#fff5f5",ib:"#fed7d7"},
         ].map(t=>(
           <button key={t.id} onClick={()=>setTab(t.id)} style={{
             flex:1,padding:"10px 6px",
@@ -346,19 +431,91 @@ function App(){
         {/* 주차조회 */}
         {tab==="check"&&(
           <div>
+            {/* 이용 안내 카드 */}
+            <div style={{background:"#fff",borderRadius:12,border:"1px solid #e8e8e8",padding:"14px 16px",marginBottom:14,borderLeft:"4px solid #2b6cb0"}}>
+              <div style={{fontSize:13,fontWeight:700,color:"#2b6cb0",marginBottom:8}}>📌 이용 안내</div>
+              <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                {[
+                  {n:"1",text:"지정 차량은 미리 차량등록을 해 주세요"},
+                  {n:"2",text:"가끔 한번씩 편하신 시간에 주차조회를 해 주세요"},
+                  {n:"3",text:"주차기록이 쌓이면 조치필요차량으로 자동 분류됩니다"},
+                ].map(({n,text})=>(
+                  <div key={n} style={{display:"flex",alignItems:"flex-start",gap:8}}>
+                    <div style={{flex:"0 0 20px",width:20,height:20,background:"#2b6cb0",color:"#fff",borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:800,marginTop:1}}>{n}</div>
+                    <div style={{fontSize:13,color:"#444",lineHeight:1.5}}>{text}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
             <div style={{background:"#fff",borderRadius:16,padding:"20px 18px",marginBottom:12,border:"2px solid #e8e8e8",boxShadow:"0 2px 12px rgba(0,0,0,0.06)"}}>
               <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14}}>
                 <div style={{background:"#003580",color:"#fff",borderRadius:6,padding:"3px 10px",fontSize:11,fontWeight:800,letterSpacing:1}}>🇰🇷 KOR</div>
                 <div style={{fontSize:13,color:"#555",fontWeight:600}}>차량 번호판 입력</div>
                 <div style={{marginLeft:"auto",fontSize:11,color:"#bbb"}}>신형·구형·영업용 모두 지원</div>
               </div>
-              <div style={{background:plateReady?"#f5c518":"#f9f9f9",border:`2px solid ${plateReady?"#e6b800":"#ddd"}`,borderRadius:10,padding:"4px 8px",transition:"all 0.25s",boxShadow:plateReady?"0 2px 12px rgba(245,197,24,0.4)":"inset 0 1px 4px rgba(0,0,0,0.06)"}}>
-                <input ref={inputRef} value={plateInput}
-                  onChange={e=>setPlateInput(e.target.value.replace(/\s/g,""))}
-                  onKeyDown={e=>e.key==="Enter"&&isValid(plateInput)&&doCheck()}
-                  placeholder="12가3456" maxLength={10}
-                  style={{width:"100%",padding:"16px 12px",border:"none",borderRadius:8,fontSize:36,fontWeight:900,letterSpacing:8,fontFamily:"inherit",color:plateReady?"#111":"#333",outline:"none",textAlign:"center",background:"transparent"}}/>
+
+              {/* 입력창 + 드롭다운 */}
+              <div style={{position:"relative"}}>
+                <div style={{background:plateReady?"#f5c518":"#f9f9f9",border:`2px solid ${plateReady?"#e6b800":"#ddd"}`,borderRadius:10,padding:"4px 8px",transition:"all 0.25s",boxShadow:plateReady?"0 2px 12px rgba(245,197,24,0.4)":"inset 0 1px 4px rgba(0,0,0,0.06)"}}>
+                  <input ref={inputRef} value={plateInput}
+                    onChange={e=>setPlateInput(e.target.value.replace(/\s/g,""))}
+                    onKeyDown={e=>e.key==="Enter"&&isValid(plateInput)&&doCheck()}
+                    placeholder="12가3456" maxLength={10}
+                    style={{width:"100%",padding:"16px 12px",border:"none",borderRadius:8,fontSize:36,fontWeight:900,letterSpacing:8,fontFamily:"inherit",color:plateReady?"#111":"#333",outline:"none",textAlign:"center",background:"transparent"}}/>
+                </div>
+
+                {/* 자동완성 드롭다운 */}
+                {(()=>{
+                  if(plateInput.length<2)return null;
+                  const q=clean(plateInput).toLowerCase();
+                  // 등록차량 + 기존 기록에서 검색
+                  const allPlates=[...new Set([...regList.map(r=>r.plate),...log.map(l=>l.plate)])];
+                  const matched=allPlates.filter(p=>p.toLowerCase().includes(q));
+                  const exactMatch=allPlates.some(p=>p===clean(plateInput));
+
+                  if(exactMatch)return null; // 정확히 일치하면 드롭다운 불필요
+
+                  return(
+                    <div style={{position:"absolute",top:"calc(100% + 6px)",left:0,right:0,background:"#fff",border:"1px solid #e8e8e8",borderRadius:12,boxShadow:"0 8px 30px rgba(0,0,0,0.12)",zIndex:100,overflow:"hidden",animation:"slideIn 0.15s ease"}}>
+                      {matched.length>0?(
+                        <>
+                          <div style={{padding:"8px 14px",fontSize:11,color:"#999",borderBottom:"1px solid #f0f0f0",fontWeight:600}}>
+                            🔍 기존 차량 중 일치하는 번호판
+                          </div>
+                          {matched.slice(0,6).map((plate,i)=>{
+                            const isReg=regList.some(r=>r.plate===plate);
+                            const uInfo=unreg.find(u=>u.plate===plate);
+                            return(
+                              <div key={i} onClick={()=>{setPlateInput(plate);}}
+                                style={{display:"flex",alignItems:"center",gap:10,padding:"11px 14px",cursor:"pointer",borderBottom:i<Math.min(matched.length,6)-1?"1px solid #f9f9f9":"none",transition:"background 0.1s"}}
+                                onMouseEnter={e=>e.currentTarget.style.background="#f9f9f9"}
+                                onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                                <div style={{fontSize:18}}>{isReg?"✅":"🔴"}</div>
+                                <div style={{flex:1}}>
+                                  <div style={{fontWeight:800,fontSize:15,letterSpacing:2,color:"#111"}}>{plate}</div>
+                                  <div style={{fontSize:11,color:isReg?"#38a169":"#e53e3e",marginTop:1}}>
+                                    {isReg?"등록 차량":uInfo?`미등록 · ${uInfo.count}회 감지`:"미등록"}
+                                  </div>
+                                </div>
+                                <div style={{fontSize:12,color:"#bbb"}}>선택 →</div>
+                              </div>
+                            );
+                          })}
+                          {matched.length>6&&<div style={{padding:"8px 14px",fontSize:11,color:"#bbb",textAlign:"center"}}>{matched.length-6}개 더 있음</div>}
+                        </>
+                      ):(
+                        <div style={{padding:"16px 14px",textAlign:"center"}}>
+                          <div style={{fontSize:20,marginBottom:6}}>🔎</div>
+                          <div style={{fontSize:13,color:"#888",fontWeight:600}}>일치하는 기존 차량 없음</div>
+                          <div style={{fontSize:12,color:"#bbb",marginTop:4}}>전체 번호판을 입력하고 조회해 주세요</div>
+                          <div style={{fontSize:11,color:"#bbb",marginTop:2}}>예) <b style={{color:"#555"}}>147부8557</b> · <b style={{color:"#555"}}>서울12가3456</b></div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
+
               <div style={{display:"flex",gap:6,marginTop:12,justifyContent:"center",flexWrap:"wrap"}}>
                 <div style={{fontSize:11,color:"#bbb",alignSelf:"center"}}>예시:</div>
                 {["12가3456","서울12가3456","서울12바3456"].map(ex=>(
@@ -419,13 +576,14 @@ function App(){
               <div style={{display:"flex",flexDirection:"column",gap:8}}>
                 {filteredLog.map((entry,i)=>{
                   const s=entry.status?STATUS_INFO[entry.status]:null;
-                  const wasLater=!entry.registered&&regList.includes(entry.plate);
+                  const wasLater=!entry.registered&&regList.some(r=>r.plate===entry.plate);
                   return(
                     <div key={entry.id||i} style={{...card(),borderLeft:`4px solid ${entry.registered?"#38a169":s?s.border:"#fc8181"}`}}>
                       <div style={{display:"flex",alignItems:"center",gap:10}}>
                         <div style={{fontSize:20}}>{entry.registered?"✅":s?s.icon:"🔴"}</div>
                         <div style={{flex:1}}>
                           <div style={plateBadge}>{entry.plate}</div>
+                          {entry.car_type&&<div style={{fontSize:11,color:"#888",marginTop:3}}>🚗 {entry.car_type}</div>}
                           <div style={{marginTop:5,fontSize:12,color:"#999"}}>⏰ {entry.time_str}</div>
                         </div>
                         <div style={{textAlign:"right",flexShrink:0}}>
@@ -474,6 +632,7 @@ function App(){
                         <div>
                           <div style={plateBadge}>{u.plate}</div>
                           <div style={{marginTop:6,display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
+                            {u.car_type&&<div style={{fontSize:12,color:"#555",fontWeight:600}}>🚗 {u.car_type}</div>}
                             <div style={{background:u.count>=5?"#e53e3e":u.count>=3?"#dd6b20":"#975a16",color:"#fff",borderRadius:20,padding:"2px 10px",fontSize:12,fontWeight:700}}>
                               {u.count>=5?"🚨":u.count>=3?"⚠️":"📌"} {u.count}회 감지
                             </div>
