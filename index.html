@@ -7,7 +7,9 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<!-- Firebase compat SDK (v9+ 의 v8 호환 빌드) -->
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;}
 body{background:#f5f5f5;font-family:'Apple SD Gothic Neo','Noto Sans KR',sans-serif;}
@@ -36,10 +38,25 @@ input::placeholder{color:#bbb;}
 <script type="text/babel">
 const {useState,useEffect,useRef}=React;
 
-// ── Supabase 설정 ──────────────────────────────────
-const SUPABASE_URL="https://hcnbjzmdupxucaectoii.supabase.co";
-const SUPABASE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhjbmJqem1kdXB4dWNhZWN0b2lpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc1MzM4ODksImV4cCI6MjA5MzEwOTg4OX0.JtTBB5Cj6HTN565aeTXnNRcXgF0cgwQI0sc-GnIf1mA";
-const sb=supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
+// ── Firebase 설정 ─────────────────────────────────────────────
+// ⚠️ 아래 firebaseConfig 값을 본인의 Firebase 프로젝트 config로 교체하세요.
+//   Firebase 콘솔 → 프로젝트 설정(⚙️) → 일반 → 내 앱 → 웹앱(</>) 추가/선택 → SDK 설정 및 구성
+const firebaseConfig = {
+  apiKey:            "YOUR_API_KEY",
+  authDomain:        "YOUR_PROJECT.firebaseapp.com",
+  projectId:         "YOUR_PROJECT_ID",
+  storageBucket:     "YOUR_PROJECT.appspot.com",
+  messagingSenderId: "YOUR_SENDER_ID",
+  appId:             "YOUR_APP_ID",
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+const FV = firebase.firestore.FieldValue;
+
+// 컬렉션 이름 (테이블과 동일)
+const COL_REG    = "registered_vehicles";  // 문서 ID = plate
+const COL_LOG    = "entry_log";             // 문서 ID = auto
+const COL_UNREG  = "unregistered_log";      // 문서 ID = plate
 
 const STATUS_INFO={
   미확인:  {icon:"🔴",label:"미확인",      color:"#e53e3e",bg:"#fff5f5",border:"#fed7d7"},
@@ -49,6 +66,13 @@ const STATUS_INFO={
 };
 
 const fmt=(iso)=>new Date(iso).toLocaleString("ko-KR",{year:"numeric",month:"long",day:"numeric",weekday:"short",hour:"2-digit",minute:"2-digit"});
+
+// Firestore Timestamp 또는 ISO string을 안전하게 Date로 변환
+const toDate=(v)=>{
+  if(!v) return null;
+  if(typeof v?.toDate==="function") return v.toDate();
+  return new Date(v);
+};
 
 function CarTypeEditor({item,onRemove,onSave,plateBadge}){
   const [editing,setEditing]=useState(false);
@@ -109,19 +133,30 @@ function App(){
   const inputRef=useRef(null);
   const justChecked=useRef(false);
 
-  // ── 데이터 로드 ──────────────────────────────────
+  // ── 데이터 로드 ──────────────────────────────────────────────
   const loadAll=async()=>{
     setLoading(true);
     try{
-      const [r1,r2,r3]=await Promise.all([
-        sb.from("registered_vehicles").select("plate,car_type").order("created_at",{ascending:false}),
-        sb.from("entry_log").select("*").order("created_at",{ascending:false}).limit(500),
-        sb.from("unregistered_log").select("*").order("count",{ascending:false}),
+      const [s1,s2,s3]=await Promise.all([
+        db.collection(COL_REG).orderBy("created_at","desc").get(),
+        db.collection(COL_LOG).orderBy("created_at","desc").limit(500).get(),
+        db.collection(COL_UNREG).orderBy("count","desc").get(),
       ]);
-      if(r1.data)setRegList(r1.data);
-      if(r2.data)setLog(r2.data.map(e=>({...e,time_str:e.time_str||fmt(e.created_at)})));
-      if(r3.data)setUnreg(r3.data);
-    }catch(e){setFlash({type:"err",msg:"데이터 로드 실패: "+e.message});}
+      setRegList(s1.docs.map(d=>({...d.data()})));
+      setLog(s2.docs.map(d=>{
+        const data=d.data();
+        const dt=toDate(data.created_at)||toDate(data.ts);
+        return {
+          ...data,
+          id:d.id,
+          time_str:data.time_str||(dt?fmt(dt):""),
+        };
+      }));
+      setUnreg(s3.docs.map(d=>({...d.data()})));
+    }catch(e){
+      console.error(e);
+      setFlash({type:"err",msg:"데이터 로드 실패: "+e.message});
+    }
     setLoading(false);
   };
 
@@ -136,7 +171,7 @@ function App(){
     setResult(null);
   },[plateInput]);
 
-  // ── 분류 ──────────────────────────────────────────
+  // ── 분류 ────────────────────────────────────────────────────
   const classify=async(status)=>{
     if(!classifyTarget)return;
     const {plate}=classifyTarget;
@@ -144,19 +179,36 @@ function App(){
     try{
       const upd={status};
       if(classifyCarType) upd.car_type=classifyCarType;
-      await sb.from("entry_log").update(upd).eq("plate",plate).eq("registered",false);
-      await sb.from("unregistered_log").update(upd).eq("plate",plate);
+
+      // entry_log: plate 일치 + registered=false 인 모든 문서 업데이트
+      const entryQ=await db.collection(COL_LOG)
+        .where("plate","==",plate)
+        .where("registered","==",false)
+        .get();
+      const batch=db.batch();
+      entryQ.docs.forEach(doc=>batch.update(doc.ref,upd));
+
+      // unregistered_log 업데이트 (문서 ID = plate)
+      const unregRef=db.collection(COL_UNREG).doc(plate);
+      const unregDoc=await unregRef.get();
+      if(unregDoc.exists){batch.update(unregRef,upd);}
+
+      await batch.commit();
+
       setLog(prev=>prev.map(e=>e.plate===plate&&!e.registered?{...e,...upd}:e));
       setUnreg(prev=>prev.map(u=>u.plate===plate?{...u,...upd}:u));
       const s=STATUS_INFO[status];
       setFlash({type:"ok",msg:`${s.icon} ${plate} → ${s.label} 분류 완료`});
-    }catch(e){setFlash({type:"err",msg:"분류 실패: "+e.message});}
+    }catch(e){
+      console.error(e);
+      setFlash({type:"err",msg:"분류 실패: "+e.message});
+    }
     setSaving(false);
     setClassifyTarget(null);
     setClassifyCarType("");
   };
 
-  // ── 조회 ──────────────────────────────────────────
+  // ── 조회 ────────────────────────────────────────────────────
   const doCheck=async()=>{
     const plate=clean(plateInput);
     if(!isValid(plate))return;
@@ -166,16 +218,33 @@ function App(){
     setSaving(true);
     try{
       // 출입 기록 저장
-      await sb.from("entry_log").insert({plate,time_str,ts,registered,status:registered?null:"미확인"});
+      await db.collection(COL_LOG).add({
+        plate, time_str, ts, registered,
+        status: registered?null:"미확인",
+        created_at: FV.serverTimestamp(),
+      });
 
-      // 미등록이면 누적
+      // 미등록이면 unregistered_log 누적
       if(!registered){
-        const{data:ex}=await sb.from("unregistered_log").select("*").eq("plate",plate).single();
-        if(ex){
-          const newTimes=[time_str,...(ex.times||[])];
-          await sb.from("unregistered_log").update({count:ex.count+1,times:newTimes,updated_at:ts}).eq("plate",plate);
+        const unregRef=db.collection(COL_UNREG).doc(plate);
+        const ex=await unregRef.get();
+        if(ex.exists){
+          const data=ex.data();
+          const newTimes=[time_str,...(data.times||[])];
+          await unregRef.update({
+            count:(data.count||0)+1,
+            times:newTimes,
+            updated_at:ts,
+          });
         }else{
-          await sb.from("unregistered_log").insert({plate,count:1,status:"미확인",times:[time_str]});
+          await unregRef.set({
+            plate,
+            count:1,
+            status:"미확인",
+            times:[time_str],
+            created_at:FV.serverTimestamp(),
+            updated_at:ts,
+          });
         }
       }
       setResult({plate,isRegistered:registered,time:time_str});
@@ -184,20 +253,28 @@ function App(){
       setPlateReady(false);
       await loadAll();
       setTimeout(()=>resultRef.current?.scrollIntoView({behavior:"smooth"}),100);
-    }catch(e){setFlash({type:"err",msg:"저장 실패: "+e.message});}
+    }catch(e){
+      console.error(e);
+      setFlash({type:"err",msg:"저장 실패: "+e.message});
+    }
     setSaving(false);
   };
 
-  // ── 차량 등록 ──────────────────────────────────────
+  // ── 차량 등록 ───────────────────────────────────────────────
   const addReg=async()=>{
     const p=clean(addPlate);
     if(!p)return;
     if(regList.some(r=>r.plate===p)){setFlash({type:"warn",msg:"이미 등록된 차량입니다."});return;}
     setSaving(true);
     try{
-      const {data,error}=await sb.from("registered_vehicles").insert({plate:p,car_type:addCarType||null}).select();
-      if(error)throw error;
-      await sb.from("unregistered_log").delete().eq("plate",p);
+      // 문서 ID를 plate 로 사용 (중복 방지 + 빠른 조회)
+      await db.collection(COL_REG).doc(p).set({
+        plate:p,
+        car_type:addCarType||null,
+        created_at:FV.serverTimestamp(),
+      });
+      // 기존 미등록 누적 제거 (없으면 무시)
+      try{ await db.collection(COL_UNREG).doc(p).delete(); }catch(_){}
       setAddPlate(""); setAddCarType("");
       setFlash({type:"ok",msg:`${p} 등록 완료`});
       await loadAll();
@@ -212,7 +289,7 @@ function App(){
     if(!confirm(`${plate} 를 등록 차량에서 삭제하시겠습니까?`))return;
     setSaving(true);
     try{
-      await sb.from("registered_vehicles").delete().eq("plate",plate);
+      await db.collection(COL_REG).doc(plate).delete();
       setFlash({type:"ok",msg:`${plate} 삭제 완료`});
       await loadAll();
     }catch(e){setFlash({type:"err",msg:"삭제 실패: "+e.message});}
@@ -222,26 +299,40 @@ function App(){
   const updateCarType=async(plate,carType)=>{
     setSaving(true);
     try{
-      await sb.from("registered_vehicles").update({car_type:carType||null}).eq("plate",plate);
+      await db.collection(COL_REG).doc(plate).update({car_type:carType||null});
       setRegList(prev=>prev.map(r=>r.plate===plate?{...r,car_type:carType||null}:r));
       setFlash({type:"ok",msg:`${plate} 차종 저장 완료`});
     }catch(e){setFlash({type:"err",msg:"저장 실패: "+e.message});}
     setSaving(false);
   };
 
-  // ── 3개월 이전 삭제 ────────────────────────────────
+  // ── 3개월 이전 삭제 ─────────────────────────────────────────
   const clearOld=async()=>{
     const ago=new Date();ago.setMonth(ago.getMonth()-3);
-    const old=log.filter(e=>new Date(e.ts||e.created_at)<ago);
+    const old=log.filter(e=>{const dt=toDate(e.ts)||toDate(e.created_at);return dt && dt<ago;});
     if(old.length===0){alert("3개월 이전 기록이 없습니다.");return;}
     if(!confirm(`3개월 이전 기록 ${old.length}건을 삭제하시겠습니까?\n삭제된 기록은 복구할 수 없습니다.`))return;
     if(!confirm(`정말 삭제하시겠습니까?\n${ago.toLocaleDateString("ko-KR")} 이전 기록 ${old.length}건이 영구 삭제됩니다.`))return;
     setSaving(true);
     try{
-      await sb.from("entry_log").delete().lt("ts",ago.toISOString());
-      setFlash({type:"ok",msg:`🗑 ${old.length}건 삭제 완료`});
+      // ts 필드(ISO string) 기준으로 쿼리
+      const q=await db.collection(COL_LOG)
+        .where("ts","<",ago.toISOString())
+        .get();
+      // 한 batch는 최대 500건이라 청크 분할
+      const docs=q.docs;
+      for(let i=0;i<docs.length;i+=450){
+        const chunk=docs.slice(i,i+450);
+        const batch=db.batch();
+        chunk.forEach(d=>batch.delete(d.ref));
+        await batch.commit();
+      }
+      setFlash({type:"ok",msg:`🗑 ${docs.length}건 삭제 완료`});
       await loadAll();
-    }catch(e){setFlash({type:"err",msg:"삭제 실패: "+e.message});}
+    }catch(e){
+      console.error(e);
+      setFlash({type:"err",msg:"삭제 실패: "+e.message});
+    }
     setSaving(false);
   };
 
@@ -254,10 +345,12 @@ function App(){
   const unregCount=(plate)=>unreg.find(u=>u.plate===plate)?.count||0;
   const unconfirmed=unreg.filter(u=>u.status==="미확인").length;
 
-  // ── 필터 ──────────────────────────────────────────
+  // ── 필터 ────────────────────────────────────────────────────
   const filteredLog=log.filter(e=>{
     if(logFilter==="전체")return true;
-    const n=new Date(),dd=new Date(e.ts||e.created_at);
+    const n=new Date();
+    const dd=toDate(e.ts)||toDate(e.created_at);
+    if(!dd) return false;
     if(logFilter==="오늘")return dd.toDateString()===n.toDateString();
     if(logFilter==="이번주"){const s=new Date(n);s.setDate(n.getDate()-n.getDay());s.setHours(0,0,0,0);return dd>=s;}
     if(logFilter==="이번달")return dd.getMonth()===n.getMonth()&&dd.getFullYear()===n.getFullYear();
@@ -314,13 +407,25 @@ function App(){
                 if(!confirm(`${classifyTarget.plate} 기록을 삭제하시겠습니까?\n잘못 입력된 기록을 완전히 제거합니다.`))return;
                 setSaving(true);
                 try{
-                  await sb.from("entry_log").delete().eq("plate",classifyTarget.plate);
-                  await sb.from("unregistered_log").delete().eq("plate",classifyTarget.plate);
+                  // entry_log 에서 해당 plate 의 모든 문서 삭제
+                  const q=await db.collection(COL_LOG).where("plate","==",classifyTarget.plate).get();
+                  const docs=q.docs;
+                  for(let i=0;i<docs.length;i+=450){
+                    const chunk=docs.slice(i,i+450);
+                    const batch=db.batch();
+                    chunk.forEach(d=>batch.delete(d.ref));
+                    await batch.commit();
+                  }
+                  // unregistered_log 삭제
+                  try{ await db.collection(COL_UNREG).doc(classifyTarget.plate).delete(); }catch(_){}
                   setLog(prev=>prev.filter(e=>e.plate!==classifyTarget.plate));
                   setUnreg(prev=>prev.filter(u=>u.plate!==classifyTarget.plate));
                   setFlash({type:"ok",msg:`🗑 ${classifyTarget.plate} 기록 삭제 완료`});
                   setClassifyTarget(null);
-                }catch(e){setFlash({type:"err",msg:"삭제 실패: "+e.message});}
+                }catch(e){
+                  console.error(e);
+                  setFlash({type:"err",msg:"삭제 실패: "+e.message});
+                }
                 setSaving(false);
               }} style={{padding:"12px 14px",background:"#f7f7f7",border:"1.5px solid #ddd",borderRadius:10,cursor:"pointer",fontFamily:"inherit",textAlign:"left",display:"flex",alignItems:"center",gap:10}}>
                 <span style={{fontSize:20}}>🗑</span>
@@ -468,12 +573,11 @@ function App(){
                 {(()=>{
                   if(plateInput.length<2)return null;
                   const q=clean(plateInput).toLowerCase();
-                  // 등록차량 + 기존 기록에서 검색
                   const allPlates=[...new Set([...regList.map(r=>r.plate),...log.map(l=>l.plate)])];
                   const matched=allPlates.filter(p=>p.toLowerCase().includes(q));
                   const exactMatch=allPlates.some(p=>p===clean(plateInput));
 
-                  if(exactMatch)return null; // 정확히 일치하면 드롭다운 불필요
+                  if(exactMatch)return null;
 
                   return(
                     <div style={{position:"absolute",top:"calc(100% + 6px)",left:0,right:0,background:"#fff",border:"1px solid #e8e8e8",borderRadius:12,boxShadow:"0 8px 30px rgba(0,0,0,0.12)",zIndex:100,overflow:"hidden",animation:"slideIn 0.15s ease"}}>
