@@ -31,6 +31,15 @@ input::placeholder{color:#bbb;}
 .btn-warn{flex:0 0 auto;background:#fff5f5;border:1.5px solid #fc8181;border-radius:7px;padding:4px 8px;cursor:pointer;text-align:center;}
 .btn-warn .n{color:#e53e3e;font-size:11px;font-weight:900;white-space:nowrap;}
 .btn-warn .l{color:#e53e3e;font-size:9px;font-weight:700;}
+/* Firebase 연결 상태 인디케이터 */
+.fb-status{display:inline-flex;align-items:center;gap:4px;}
+.fb-dot{display:inline-block;width:7px;height:7px;border-radius:50%;flex-shrink:0;}
+.fb-dot.connecting{background:#ed8936;animation:blink-orange 1s ease-in-out infinite;}
+.fb-dot.connected{background:#38a169;animation:blink-green 1.6s ease-in-out infinite;}
+.fb-dot.error{background:#e53e3e;animation:blink-red 0.7s ease-in-out infinite;}
+@keyframes blink-green{0%,100%{box-shadow:0 0 0 0 rgba(56,161,105,0.7)}50%{box-shadow:0 0 0 5px rgba(56,161,105,0)}}
+@keyframes blink-red{0%,100%{box-shadow:0 0 0 0 rgba(229,62,62,0.8);opacity:1}50%{box-shadow:0 0 0 6px rgba(229,62,62,0);opacity:0.6}}
+@keyframes blink-orange{0%,100%{opacity:1}50%{opacity:0.35}}
 </style>
 </head>
 <body>
@@ -129,6 +138,7 @@ function App(){
   const [plateReady,setPlateReady]=useState(false);
   const [loading,setLoading]=useState(true);
   const [saving,setSaving]=useState(false);
+  const [connStatus,setConnStatus]=useState("connecting"); // connecting | connected | error
   const resultRef=useRef(null);
   const inputRef=useRef(null);
   const justChecked=useRef(false);
@@ -161,6 +171,38 @@ function App(){
   };
 
   useEffect(()=>{loadAll();},[]);
+
+  // ── Firebase 연결 상태 모니터링 ──────────────────────────────
+  useEffect(()=>{
+    const onOffline=()=>setConnStatus("error");
+    const onOnline =()=>setConnStatus(prev=>prev==="error"?"connecting":prev);
+    window.addEventListener("offline",onOffline);
+    window.addEventListener("online", onOnline);
+
+    // registered_vehicles 컬렉션을 실시간 listen → metadata 로 연결상태 감지
+    const unsub=db.collection(COL_REG).limit(1).onSnapshot(
+      {includeMetadataChanges:true},
+      (snap)=>{
+        if(!navigator.onLine){setConnStatus("error");return;}
+        if(snap.metadata.fromCache){
+          // 캐시에서만 응답 → 아직 서버에 못 닿음
+          setConnStatus(prev=>prev==="connected"?"connected":"connecting");
+        }else{
+          setConnStatus("connected");
+        }
+      },
+      (err)=>{
+        console.error("Firebase 연결 오류:",err);
+        setConnStatus("error");
+      }
+    );
+
+    return()=>{
+      window.removeEventListener("offline",onOffline);
+      window.removeEventListener("online", onOnline);
+      unsub();
+    };
+  },[]);
 
   const clean=(v)=>v.replace(/\s/g,"");
   const isValid=(v)=>clean(v).length>=4;
@@ -490,7 +532,14 @@ function App(){
           <div className="hdr-logo">P</div>
           <div className="hdr-title">
             <h1>서현빌딩 주차관리</h1>
-            <p>PARKING CONTROL SYSTEM</p>
+            <p>
+              PARKING CONTROL SYSTEM
+              <span className="fb-status" style={{marginLeft:6,color:connStatus==="connected"?"#38a169":connStatus==="error"?"#e53e3e":"#ed8936",fontWeight:600}}
+                title={connStatus==="connected"?"Firebase 연결됨":connStatus==="error"?"Firebase 연결 실패 — 네트워크 또는 설정 확인":"Firebase 연결 중..."}>
+                · Firebase
+                <span className={`fb-dot ${connStatus}`}></span>
+              </span>
+            </p>
           </div>
           <div className="hdr-btns">
             <button className="btn-reg" onClick={()=>setRegOpen(true)}>
